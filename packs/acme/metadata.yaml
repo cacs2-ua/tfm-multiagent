@@ -1,0 +1,14 @@
+company_id: acme
+sector: retail
+primary_language: en
+allowed_languages:
+- en
+tone:
+  style: neutral
+  verbosity: concise
+  empathy: medium
+support_scope: {}
+escalation:
+  human_support_message: If you want, I can guide you to contact support.
+  contact: {}
+compliance_tags: []

@@ -1,0 +1,22 @@
+routing:
+  always_call_researcher_topics:
+  - refund
+  - warranty
+  - policy
+  - pricing
+  skip_researcher_intents:
+  - greeting
+  - small_talk
+answer_policy:
+  require_citations_for_topics:
+  - refund
+  - warranty
+  - policy
+  - pricing
+  forbid_speculation: true
+escalation:
+  ask_clarification_on_low_confidence: true
+  escalate_on_sensitive_requests: true
+arbitration:
+  prefer_evidence_over_draft: true
+  on_insufficient_evidence: abstain_or_clarify

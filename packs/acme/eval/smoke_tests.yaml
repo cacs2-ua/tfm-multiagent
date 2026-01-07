@@ -1,0 +1,6 @@
+cases:
+- id: smoke_policy
+  query: What is your refund policy?
+  tags:
+  - policy
+  expected_behavior: Answer with citations or say insufficient evidence.
