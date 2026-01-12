@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .io_utils import write_json, write_yaml
+from .prompts_schema import default_prompts_dict
 from .versioning import PLATFORM_VERSION
 
 
@@ -69,24 +70,29 @@ def create_company_pack_skeleton(
     }
 
     plugins: Dict[str, Any] = {
-        "enabled": [],     # allow-list; default deny-by-default
+        "enabled": [],  # allow-list; deny-by-default
         "settings": {},
     }
 
     retrieval: Dict[str, Any] = {
+        "schema_version": 1,
         "chunk_size": 800,
         "chunk_overlap": 100,
         "top_k": 5,
         "filters": {},
     }
 
+    prompts: Dict[str, Any] = default_prompts_dict(
+        company_name=company_name, sector=sector, primary_language=primary_language
+    )
+
     write_json(root / "manifest.json", manifest)
     write_yaml(root / "metadata.yaml", metadata)
     write_yaml(root / "rules.yaml", rules)
     write_yaml(root / "plugins.yaml", plugins)
     write_yaml(root / "retrieval.yaml", retrieval)
+    write_yaml(root / "prompts.yaml", prompts)
 
-    # Optional eval smoke tests example
     write_yaml(root / "eval" / "smoke_tests.yaml", {
         "cases": [
             {

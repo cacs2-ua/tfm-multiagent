@@ -58,6 +58,9 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     print(f"Rules routing keys: {list(pack.rules.routing.keys())}")
     print(f"Answer policy keys: {list(pack.rules.answer_policy.keys())}")
     print(f"Plugins enabled: {pack.plugins.enabled}")
+    print(f"Prompts agents: {list(pack.prompts.raw.get('agents', {}).keys())}")
+    print(f"Prompt templates: {list(pack.prompts.templates().keys())}")
+
     pdfs = pack.list_pdfs()
     for i, p in enumerate(pdfs[:10], start=1):
         print(f"PDF {i}: {p.name}")

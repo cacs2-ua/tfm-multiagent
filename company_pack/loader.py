@@ -12,10 +12,13 @@ from .errors import (
     CompanyPackValidationError,
 )
 from .io_utils import read_json, read_yaml
-from .models import CompanyPack, Manifest, Metadata, PluginsConfig, RetrievalConfig, Rules
+from .models import CompanyPack, Manifest, Metadata, PluginsConfig, RetrievalConfig, Rules, PromptsConfig
+from .prompts_schema import default_prompts_dict, deep_merge, validate_prompts_dict
 from .versioning import PLATFORM_VERSION
+from .prompts_schema import default_prompts_dict, deep_merge, validate_prompts_dict, validate_prompts_file_minimal
 
-REQUIRED_FILES = {"manifest.json", "metadata.yaml", "rules.yaml", "plugins.yaml"}
+
+REQUIRED_FILES = {"manifest.json", "metadata.yaml", "rules.yaml", "plugins.yaml", "prompts.yaml"}
 DOCS_DIRNAME = "docs"
 
 
@@ -27,7 +30,6 @@ def _safe_extract_zip(zip_path: Path, extract_to: Path) -> None:
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
             for member in zf.namelist():
-                # Prevent ZipSlip path traversal
                 dest = (extract_to / member).resolve()
                 if not str(dest).startswith(str(extract_to.resolve())):
                     raise CompanyPackExtractionError(
@@ -41,11 +43,9 @@ def _safe_extract_zip(zip_path: Path, extract_to: Path) -> None:
 
 
 def _find_pack_root(dir_path: Path) -> Path:
-    # Accept direct pack root
     if (dir_path / "manifest.json").exists():
         return dir_path
 
-    # Accept a folder that contains exactly 1 child folder which is the pack root
     children = [p for p in dir_path.iterdir() if p.is_dir()]
     if len(children) == 1 and (children[0] / "manifest.json").exists():
         return children[0]
@@ -76,8 +76,6 @@ def load_company_pack(
 
     Returns:
       (CompanyPack, temp_dir_if_zip)
-    If input is a folder -> temp_dir_if_zip is None.
-    If input is a zip -> temp dir path is returned; caller may delete it.
     """
     p = Path(pack_path).expanduser().resolve()
     if not p.exists():
@@ -103,12 +101,36 @@ def load_company_pack(
         rules = Rules.from_dict(read_yaml(pack_root / "rules.yaml"))
         plugins = PluginsConfig.from_dict(read_yaml(pack_root / "plugins.yaml"))
 
+        # Retrieval: optional file, but always produce a resolved RetrievalConfig (defaults if missing)
         retrieval_path = pack_root / "retrieval.yaml"
+        retrieval_defaults = RetrievalConfig.default()
         retrieval = (
-            RetrievalConfig.from_dict(read_yaml(retrieval_path))
+            RetrievalConfig.from_dict(read_yaml(retrieval_path), defaults=retrieval_defaults)
             if retrieval_path.exists()
-            else None
+            else retrieval_defaults
         )
+
+        # Prompts: required file, but we still apply defaults+merge to allow partial overrides safely
+        prompts_path = pack_root / "prompts.yaml"
+        prompts_raw = read_yaml(prompts_path)
+
+        try:
+            validate_prompts_file_minimal(prompts_raw)
+        except Exception as e:
+            raise CompanyPackValidationError(f"Invalid prompts.yaml: {e}") from e
+
+        base_prompts = default_prompts_dict(
+            company_name=manifest.company_name,
+            sector=metadata.sector,
+            primary_language=metadata.primary_language,
+        )
+        merged_prompts = deep_merge(base_prompts, prompts_raw)
+        try:
+            validate_prompts_dict(merged_prompts)
+        except Exception as e:
+            raise CompanyPackValidationError(f"Invalid prompts.yaml: {e}") from e
+
+        prompts = PromptsConfig(raw=merged_prompts)
 
         pack = CompanyPack(
             root=pack_root,
@@ -117,6 +139,7 @@ def load_company_pack(
             rules=rules,
             plugins=plugins,
             retrieval=retrieval,
+            prompts=prompts,
             docs_dir=pack_root / DOCS_DIRNAME,
         )
 

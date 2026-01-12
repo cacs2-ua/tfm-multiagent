@@ -48,6 +48,9 @@ def _opt_list_str(d: Dict[str, Any], k: str) -> List[str]:
     return [x.strip() for x in v if x.strip()]
 
 
+SUPPORTED_PACK_SCHEMA_VERSIONS = {1}
+
+
 @dataclass(frozen=True)
 class Compatibility:
     min_platform_version: str
@@ -87,6 +90,11 @@ class Manifest:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Manifest":
         schema_version = _req_int(d, "schema_version")
+        if schema_version not in SUPPORTED_PACK_SCHEMA_VERSIONS:
+            raise CompanyPackValidationError(
+                f"Unsupported pack schema_version: {schema_version}. Supported: {sorted(SUPPORTED_PACK_SCHEMA_VERSIONS)}"
+            )
+
         company_id = _req_str(d, "company_id")
         company_name = _req_str(d, "company_name")
         pack_version = _req_str(d, "pack_version")
@@ -173,7 +181,6 @@ class Rules:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "Rules":
-        # enforce the stable contract: these top-level keys must exist
         for key in ["routing", "answer_policy", "escalation", "arbitration"]:
             if key not in d:
                 raise CompanyPackValidationError(
@@ -199,7 +206,7 @@ class PluginsConfig:
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "PluginsConfig":
-        enabled = _opt_list_str(d, "enabled")  # allow-list (deny-by-default)
+        enabled = _opt_list_str(d, "enabled")
         settings = _opt_dict(d, "settings")
         for k, v in settings.items():
             if not isinstance(k, str):
@@ -218,31 +225,46 @@ class PluginsConfig:
 
 @dataclass(frozen=True)
 class RetrievalConfig:
-    chunk_size: Optional[int]
-    chunk_overlap: Optional[int]
-    top_k: Optional[int]
+    chunk_size: int
+    chunk_overlap: int
+    top_k: int
     filters: Dict[str, Any]
+    schema_version: int = 1
 
     @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "RetrievalConfig":
-        def opt_int(key: str) -> Optional[int]:
-            v = d.get(key)
-            if v is None:
-                return None
+    def default() -> "RetrievalConfig":
+        return RetrievalConfig(
+            chunk_size=800,
+            chunk_overlap=100,
+            top_k=5,
+            filters={},
+            schema_version=1,
+        )
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any], defaults: Optional["RetrievalConfig"] = None) -> "RetrievalConfig":
+        base = defaults or RetrievalConfig.default()
+
+        sv = d.get("schema_version", base.schema_version)
+        if not isinstance(sv, int) or sv != 1:
+            raise CompanyPackValidationError("retrieval.schema_version must be 1 (supported)")
+
+        def opt_int(key: str, default_val: int) -> int:
+            v = d.get(key, default_val)
             if not isinstance(v, int):
                 raise CompanyPackValidationError(f"retrieval.{key} must be int.")
             return v
 
-        chunk_size = opt_int("chunk_size")
-        chunk_overlap = opt_int("chunk_overlap")
-        top_k = opt_int("top_k")
-        filters = _opt_dict(d, "filters")
+        chunk_size = opt_int("chunk_size", base.chunk_size)
+        chunk_overlap = opt_int("chunk_overlap", base.chunk_overlap)
+        top_k = opt_int("top_k", base.top_k)
+        filters = _opt_dict(d, "filters") if "filters" in d else dict(base.filters)
 
-        if chunk_size is not None and not (50 <= chunk_size <= 5000):
+        if not (50 <= chunk_size <= 5000):
             raise CompanyPackValidationError("retrieval.chunk_size out of range (50..5000).")
-        if chunk_overlap is not None and chunk_overlap < 0:
+        if chunk_overlap < 0:
             raise CompanyPackValidationError("retrieval.chunk_overlap must be >= 0.")
-        if top_k is not None and not (1 <= top_k <= 50):
+        if not (1 <= top_k <= 50):
             raise CompanyPackValidationError("retrieval.top_k out of range (1..50).")
 
         return RetrievalConfig(
@@ -250,7 +272,51 @@ class RetrievalConfig:
             chunk_overlap=chunk_overlap,
             top_k=top_k,
             filters=filters,
+            schema_version=sv,
         )
+
+
+@dataclass(frozen=True)
+class PromptsConfig:
+    """
+    Parsed representation of prompts.yaml (schema v1).
+    We intentionally keep it flexible as dict, but validated.
+    """
+    raw: Dict[str, Any]
+
+    def agent_system(self, agent_id: str) -> str:
+        agents = self.raw.get("agents", {})
+        if not isinstance(agents, dict):
+            raise CompanyPackValidationError("prompts.agents invalid")
+        cfg = agents.get(agent_id, {})
+        if not isinstance(cfg, dict):
+            raise CompanyPackValidationError(f"prompts.agents.{agent_id} invalid")
+        system = cfg.get("system")
+        if not isinstance(system, str) or not system.strip():
+            raise CompanyPackValidationError(f"prompts.agents.{agent_id}.system missing/invalid")
+        return system
+
+    def agent_persona(self, agent_id: str) -> str:
+        agents = self.raw.get("agents", {})
+        if not isinstance(agents, dict):
+            return ""
+        cfg = agents.get(agent_id, {})
+        if not isinstance(cfg, dict):
+            return ""
+        persona = cfg.get("persona", "")
+        return persona if isinstance(persona, str) else ""
+
+    def templates(self) -> Dict[str, str]:
+        t = self.raw.get("templates", {})
+        if t is None:
+            return {}
+        if not isinstance(t, dict):
+            raise CompanyPackValidationError("prompts.templates must be dict")
+        out: Dict[str, str] = {}
+        for k, v in t.items():
+            if isinstance(k, str) and isinstance(v, str):
+                out[k] = v
+        return out
 
 
 @dataclass(frozen=True)
@@ -260,7 +326,8 @@ class CompanyPack:
     metadata: Metadata
     rules: Rules
     plugins: PluginsConfig
-    retrieval: Optional[RetrievalConfig]
+    retrieval: RetrievalConfig
+    prompts: PromptsConfig
     docs_dir: Path
 
     def list_pdfs(self) -> List[Path]:
@@ -269,17 +336,25 @@ class CompanyPack:
         return sorted([p for p in self.docs_dir.rglob("*.pdf") if p.is_file()])
 
     def validate_consistency(self, platform_version: str = PLATFORM_VERSION) -> None:
-        # company_id must match across manifest and metadata
         if self.manifest.company_id != self.metadata.company_id:
             raise CompanyPackValidationError(
                 f"company_id mismatch: manifest '{self.manifest.company_id}' != metadata '{self.metadata.company_id}'"
             )
 
-        # platform compatibility
         self.manifest.compatibility.check(platform_version)
 
-        # docs requirement
         if not self.list_pdfs() and not self.manifest.allow_empty_docs:
             raise CompanyPackValidationError(
                 "No PDFs found under docs/ and manifest.allow_empty_docs is false."
             )
+
+    def prompt_variables(self) -> Dict[str, Any]:
+        return {
+            "company_id": self.manifest.company_id,
+            "company_name": self.manifest.company_name,
+            "sector": self.metadata.sector,
+            "primary_language": self.metadata.primary_language,
+            "tone_style": self.metadata.tone.style,
+            "tone_verbosity": self.metadata.tone.verbosity,
+            "tone_empathy": self.metadata.tone.empathy,
+        }
