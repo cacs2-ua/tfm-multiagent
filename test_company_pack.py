@@ -18,7 +18,6 @@ from company_pack.scaffold import create_company_pack_skeleton
 
 
 def _write_minimal_pdf(path: Path) -> None:
-    # We only need a file with .pdf extension for Section 4 validation (no parsing yet).
     content = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
@@ -43,6 +42,12 @@ class TestCompanyPack(unittest.TestCase):
             self.assertEqual(pack.metadata.company_id, "acme")
             self.assertGreaterEqual(len(pack.list_pdfs()), 1)
 
+            # Section 5 checks: prompts + retrieval resolved
+            self.assertIn("agents", pack.prompts.raw)
+            self.assertIn("care", pack.prompts.raw["agents"])
+            self.assertIsInstance(pack.retrieval.chunk_size, int)
+            self.assertGreater(pack.retrieval.top_k, 0)
+
     def test_missing_required_file_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "beta_pack"
@@ -53,13 +58,54 @@ class TestCompanyPack(unittest.TestCase):
             with self.assertRaises(CompanyPackValidationError):
                 load_company_pack(root)
 
+    def test_prompts_required_file_missing_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "noprompts_pack"
+            create_company_pack_skeleton(root, "np", "NoPrompts Inc.")
+            _write_minimal_pdf(root / "docs" / "a.pdf")
+
+            (root / "prompts.yaml").unlink()
+            with self.assertRaises(CompanyPackValidationError):
+                load_company_pack(root)
+
+    def test_prompts_validation_missing_agent_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "badprompts_pack"
+            create_company_pack_skeleton(root, "bp", "BadPrompts Inc.")
+            _write_minimal_pdf(root / "docs" / "a.pdf")
+
+            # Remove manager prompt from prompts.yaml
+            prompts_path = root / "prompts.yaml"
+            raw = prompts_path.read_text(encoding="utf-8")
+            # quick-and-dirty: remove the manager block by rewriting minimal invalid YAML
+            prompts_path.write_text(
+                "schema_version: 1\nagents:\n  care:\n    system: 'x'\n  researcher:\n    system: 'y'\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(CompanyPackValidationError):
+                load_company_pack(root)
+
+    def test_retrieval_defaults_when_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "noretrieval_pack"
+            create_company_pack_skeleton(root, "nr", "NoRetrieval Inc.")
+            _write_minimal_pdf(root / "docs" / "a.pdf")
+
+            # retrieval.yaml is optional; should fall back to defaults
+            (root / "retrieval.yaml").unlink()
+
+            pack, _ = load_company_pack(root)
+            self.assertEqual(pack.retrieval.chunk_size, 800)
+            self.assertEqual(pack.retrieval.chunk_overlap, 100)
+            self.assertEqual(pack.retrieval.top_k, 5)
+
     def test_company_id_mismatch_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "mismatch_pack"
             create_company_pack_skeleton(root, "id1", "Mismatch Co.")
             _write_minimal_pdf(root / "docs" / "a.pdf")
 
-            # Break metadata.yaml company_id
             meta = (root / "metadata.yaml").read_text(encoding="utf-8")
             (root / "metadata.yaml").write_text(meta.replace("company_id: id1", "company_id: id2"), encoding="utf-8")
 
@@ -78,7 +124,6 @@ class TestCompanyPack(unittest.TestCase):
             root = Path(td) / "nodocs_ok_pack"
             create_company_pack_skeleton(root, "nodocs_ok", "NoDocs OK Inc.")
 
-            # set allow_empty_docs = True in manifest.json
             manifest_path = root / "manifest.json"
             d = json.loads(manifest_path.read_text(encoding="utf-8"))
             d["allow_empty_docs"] = True
@@ -103,7 +148,6 @@ class TestCompanyPack(unittest.TestCase):
             self.assertEqual(pack.manifest.company_id, "zipco")
             self.assertGreaterEqual(len(pack.list_pdfs()), 1)
 
-            # cleanup extracted temp
             if tmp is not None:
                 shutil.rmtree(tmp, ignore_errors=True)
 
@@ -123,7 +167,6 @@ class TestCompanyPack(unittest.TestCase):
             td_path = Path(td)
             zip_path = td_path / "evil.zip"
 
-            # Create a zip with a traversal entry
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("../pwned.txt", "owned")
 
