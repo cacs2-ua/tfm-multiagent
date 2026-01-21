@@ -8,6 +8,7 @@ from .loader import load_company_pack
 from .models import CompanyPack
 from .scaffold import create_company_pack_skeleton
 from .versioning import PLATFORM_VERSION
+from .pluginsystem.registry import PluginRegistry
 
 __all__ = [
     "CompanyPack",
@@ -18,4 +19,5 @@ __all__ = [
     "CompanyPackExtractionError",
     "load_company_pack",
     "create_company_pack_skeleton",
+    "PluginRegistry",
 ]

@@ -1,2 +1,8 @@
-enabled: []
-settings: {}
+enabled:
+  - tool.ticket.mock_v1
+  - post.redaction.basic_v1
+settings:
+  tool.ticket.mock_v1:
+    default_priority: high
+  post.redaction.basic_v1:
+    replacement: "[X]"
