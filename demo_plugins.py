@@ -2,11 +2,17 @@ from pathlib import Path
 import tempfile
 
 from company_pack import PLATFORM_VERSION
+from company_pack import load_company_pack
 from company_pack.scaffold import create_company_pack_skeleton
 from company_pack.loader import load_company_pack
 
 from company_pack.pluginsystem import PluginRegistry, PluginCallContext
 from company_pack.pluginsystem.builtins import BUILTIN_PLUGIN_CLASSES
+
+pack, _ = load_company_pack(Path("./packs/acme"), platform_version=PLATFORM_VERSION)
+print("DEMO loaded pack.root =", pack.root)
+print("DEMO pack.plugins.enabled =", pack.plugins.enabled)
+print("DEMO plugins.yaml =", (pack.root / "plugins.yaml").read_text(encoding="utf-8"))
 
 def write_minimal_pdf(path: Path) -> None:
     content = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"

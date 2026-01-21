@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+from collections.abc import Mapping
 
 
 SUPPORTED_PROMPTS_SCHEMA_VERSIONS = {1}
@@ -71,38 +72,67 @@ def default_prompts_dict(company_name: str, sector: str, primary_language: str) 
         },
     }
 
-
 def validate_prompts_file_minimal(d: Dict[str, Any]) -> None:
     """
-    Validation for the *file itself* (prompts.yaml):
-    - must contain agents with keys care/manager/researcher
-    - agent entries must be dicts (can be empty to rely on defaults)
-    - does NOT require system/persona/guidelines (defaults will fill)
+    Validation for the *file itself* (prompts.yaml), but robust to two shapes:
+
+    Shape A (full document):
+      {"schema_version": 1, "prompts": {"agents": {...}, "templates": {...}}}
+
+    Shape B (already the 'prompts' block):
+      {"agents": {...}, "templates": {...}}
+
+    Also robust to YAML loaders that return Mapping-but-not-dict for nested objects
+    (e.g., ruamel.yaml CommentedMap).
     """
-    if not isinstance(d, dict):
+    # Root must be a mapping
+    if not isinstance(d, Mapping):
         raise ValueError("prompts root must be a mapping/dict")
 
-    sv = d.get("schema_version", 1)
-    if not isinstance(sv, int) or sv not in SUPPORTED_PROMPTS_SCHEMA_VERSIONS:
-        raise ValueError(f"prompts.schema_version must be one of {sorted(SUPPORTED_PROMPTS_SCHEMA_VERSIONS)}")
+    # Decide which object actually contains "agents"/"templates"
+    # If the file has top-level "prompts:", use that as the config root.
+    root = d.get("prompts") if isinstance(d, Mapping) else None
+    if root is None:
+        root = d  # fallback: d already is the "prompts" block
 
-    agents = d.get("agents")
-    if not isinstance(agents, dict):
+    if not isinstance(root, Mapping):
+        raise ValueError("prompts root must be a mapping/dict")
+
+    # schema_version can live either at top-level (Shape A) or inside root (Shape B)
+    sv = d.get("schema_version", None)
+    if sv is None:
+        sv = root.get("schema_version", 1)
+    if not isinstance(sv, int) or sv not in SUPPORTED_PROMPTS_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"prompts.schema_version must be one of {sorted(SUPPORTED_PROMPTS_SCHEMA_VERSIONS)}"
+        )
+
+    # Read agents from whichever root is being used
+    agents = root.get("agents")
+    if not isinstance(agents, Mapping):
         raise ValueError("prompts.agents must be a mapping/dict")
+
+    # Normalize to a plain dict to avoid surprises later
+    agents = dict(agents)
 
     missing = [k for k in REQUIRED_AGENT_KEYS if k not in agents]
     if missing:
         raise ValueError(f"prompts.agents is missing required agents: {missing}")
 
+    # Each required agent entry must be a mapping (dict-like)
     for agent_id in REQUIRED_AGENT_KEYS:
         cfg = agents.get(agent_id)
-        if not isinstance(cfg, dict):
+        if not isinstance(cfg, Mapping):
             raise ValueError(f"prompts.agents.{agent_id} must be a dict")
+        # (Optional) normalize each agent cfg too
+        # agents[agent_id] = dict(cfg)
 
-    templates = d.get("templates", {})
+    # templates are optional; validate type/contents if present
+    templates = root.get("templates", {})
     if templates is None:
         templates = {}
-    if not isinstance(templates, dict) or any(
+
+    if not isinstance(templates, Mapping) or any(
         not isinstance(k, str) or not isinstance(v, str) for k, v in templates.items()
     ):
         raise ValueError("prompts.templates must be a dict[str,str]")
