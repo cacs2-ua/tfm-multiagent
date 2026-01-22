@@ -9,6 +9,7 @@ from pathlib import Path
 from .loader import load_company_pack
 from .scaffold import create_company_pack_skeleton
 from .versioning import PLATFORM_VERSION
+from .datalayer.pipeline import ingest_company_pack
 
 
 def _zip_folder(src_dir: Path, out_zip: Path) -> None:
@@ -83,6 +84,22 @@ def cmd_zip(args: argparse.Namespace) -> int:
     print("➡️  Validate zip with: python -m company_pack validate --pack " + str(out_zip))
     return 0
 
+def cmd_ingest(args: argparse.Namespace) -> int:
+    pack, tmp = load_company_pack(args.pack, platform_version=PLATFORM_VERSION, keep_temp=args.keep_temp)
+
+    out = Path(args.out).expanduser().resolve() if args.out else (pack.root / "artifacts" / "ingestion")
+    paths = ingest_company_pack(pack, out_dir=out, overwrite=args.overwrite)
+
+    print("✅ Ingestion complete")
+    print(f"  Out dir:     {paths['out_dir']}")
+    print(f"  Manifest:    {paths['manifest']}")
+    print(f"  Text units:  {paths['text_units']}")
+    print(f"  Report:      {paths['report']}")
+    print("➡️  Next: Section 8 will embed + index text_units.jsonl")
+
+    if tmp is not None and not args.keep_temp:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return 0
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="company_pack", description="Company Pack tooling")
@@ -110,6 +127,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_zip.add_argument("--pack", required=True, help="Path to pack folder")
     p_zip.add_argument("--out", required=True, help="Output zip path, e.g., packs/acme.zip")
     p_zip.set_defaults(func=cmd_zip)
+
+    p_ing = sub.add_parser("ingest", help="Ingest PDFs into normalized Text Units (Section 7)")
+    p_ing.add_argument("--pack", required=True, help="Path to pack folder or .zip")
+    p_ing.add_argument("--out", default=None, help="Output directory (default: <pack>/artifacts/ingestion)")
+    p_ing.add_argument("--overwrite", action="store_true", help="Overwrite output directory if it exists")
+    p_ing.add_argument("--keep-temp", action="store_true", help="Keep extracted temp dir for zips")
+    p_ing.set_defaults(func=cmd_ingest)
+
 
     return p
 

@@ -35,11 +35,35 @@ from company_pack.pluginsystem import (
 )
 from company_pack.pluginsystem.builtins import BUILTIN_PLUGIN_CLASSES
 
+from company_pack.datalayer.pipeline import ingest_company_pack
+from company_pack.datalayer.utils import iter_jsonl
+
+
+
 def _write_minimal_pdf(path: Path) -> None:
     content = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
 
+def _write_text_pdf_reportlab(path: Path, pages: list[str]) -> None:
+    # Deterministic PDF generator for tests
+    from reportlab.pdfgen import canvas  # type: ignore
+    from reportlab.lib.pagesizes import letter  # type: ignore
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    c = canvas.Canvas(str(path), pagesize=letter)
+
+    for txt in pages:
+        # Write line by line at stable coordinates
+        y = 760
+        for line in txt.splitlines():
+            c.drawString(50, y, line)
+            y -= 14
+            if y < 60:
+                break
+        c.showPage()
+
+    c.save()
 
 def _zip_dir(src_dir: Path, zip_path: Path) -> None:
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -382,3 +406,90 @@ class TestPluginSystem(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+class TestDataLayerIngestion(unittest.TestCase):
+    def test_ingestion_produces_text_units_and_is_deterministic(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "acme_pack"
+            create_company_pack_skeleton(root, "acme", "ACME Inc.", sector="retail", primary_language="en")
+
+            # 2 pages with repeated header/footer to test stripping + stable chunking
+            header = "ACME CONFIDENTIAL"
+            footer = "PageFooter 2026"
+            p1 = "\n".join([
+                header,
+                "1. RETURNS POLICY",
+                "",
+                "Customers may return items within 30 days of delivery.",
+                "Items must be unused and in original packaging.",
+                "",
+                footer,
+            ])
+            p2 = "\n".join([
+                header,
+                "1.1 ELIGIBILITY",
+                "",
+                "- Return window: 30 days",
+                "- Proof of purchase required",
+                "",
+                footer,
+            ])
+
+            pdf_path = root / "docs" / "policies" / "returns.pdf"
+            _write_text_pdf_reportlab(pdf_path, [p1, p2])
+
+            pack, _ = load_company_pack(root, platform_version=PLATFORM_VERSION)
+
+            out1 = Path(td) / "out1"
+            out2 = Path(td) / "out2"
+
+            ingest_company_pack(pack, out_dir=out1, overwrite=True)
+            ingest_company_pack(pack, out_dir=out2, overwrite=True)
+
+            b1 = (out1 / "text_units.jsonl").read_bytes()
+            b2 = (out2 / "text_units.jsonl").read_bytes()
+            self.assertEqual(b1, b2, "text_units.jsonl must be byte-for-byte identical for same inputs")
+
+            # Parse units and check required fields
+            units = list(iter_jsonl(out1 / "text_units.jsonl"))
+            self.assertGreater(len(units), 0)
+
+            required = {
+                "company_id", "doc_id", "doc_title", "chunk_id", "chunk_index",
+                "page_start", "page_end", "section_path", "segment_types_included",
+                "content_type", "language", "text", "text_hash", "source_citation",
+                "quality_score", "warnings",
+            }
+            for u in units:
+                self.assertTrue(required.issubset(set(u.keys())))
+                self.assertEqual(u["company_id"], "acme")
+                # header/footer should be stripped
+                self.assertNotIn("ACME CONFIDENTIAL", u["text"])
+                self.assertNotIn("PageFooter 2026", u["text"])
+
+    def test_doc_id_changes_when_pdf_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "acme_pack"
+            create_company_pack_skeleton(root, "acme", "ACME Inc.", sector="retail", primary_language="en")
+
+            pdf_path = root / "docs" / "policies" / "returns.pdf"
+            _write_text_pdf_reportlab(pdf_path, ["HEADER\nPolicy line A\nFOOTER"])
+
+            pack1, _ = load_company_pack(root, platform_version=PLATFORM_VERSION)
+            out1 = Path(td) / "out1"
+            ingest_company_pack(pack1, out_dir=out1, overwrite=True)
+
+            m1 = json.loads((out1 / "manifest.json").read_text(encoding="utf-8"))
+            doc_id_1 = m1["documents"][0]["doc_id"]
+
+            # Rewrite PDF with different content
+            _write_text_pdf_reportlab(pdf_path, ["HEADER\nPolicy line B (changed)\nFOOTER"])
+
+            pack2, _ = load_company_pack(root, platform_version=PLATFORM_VERSION)
+            out2 = Path(td) / "out2"
+            ingest_company_pack(pack2, out_dir=out2, overwrite=True)
+
+            m2 = json.loads((out2 / "manifest.json").read_text(encoding="utf-8"))
+            doc_id_2 = m2["documents"][0]["doc_id"]
+
+            self.assertNotEqual(doc_id_1, doc_id_2, "doc_id must change if PDF bytes change")
